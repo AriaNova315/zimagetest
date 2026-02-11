@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { evolinkAxios } from '@/lib/axios-config';
 import { log, logError } from '@/lib/logger';
 import { auth } from '@/auth';
+import { getUserCredits, updateUserCredits } from '@/models/credit';
 
 export async function POST(request: NextRequest) {
   try {
@@ -12,6 +13,20 @@ export async function POST(request: NextRequest) {
       return NextResponse.json(
         { code: 401, message: '未登录' },
         { status: 401 }
+      );
+    }
+
+    const userUuid = (session.user as any).uuid;
+
+    // 检查 credit 余额
+    const credits = await getUserCredits(userUuid);
+    const balance = credits?.balance ?? 0;
+    log('[Evolink Generate] 用户 credit 余额:', { userUuid, balance });
+
+    if (balance < 1) {
+      return NextResponse.json(
+        { code: 402, message: 'Insufficient credits' },
+        { status: 402 }
       );
     }
 
@@ -42,6 +57,10 @@ export async function POST(request: NextRequest) {
     const response = await evolinkAxios.post('/v1/images/generations', requestBody);
 
     log('[Evolink Generate] 响应:', response.data);
+
+    // 扣减 1 个 credit
+    await updateUserCredits(userUuid, -1, 'consume', '生成图片');
+    log('[Evolink Generate] 已扣减 1 个 credit，用户:', userUuid);
 
     return NextResponse.json({
       code: 1000,
