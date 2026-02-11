@@ -571,7 +571,7 @@ export default function TextToImagePage() {
       const formData = new FormData();
       formData.append('image', referenceImage);
       formData.append('prompt', i2iPrompt);
-      formData.append('model', i2iModel);  // 直接使用模型 id
+      formData.append('model', i2iModel);
       formData.append('aspectRatio', i2iAspectRatio);
 
       console.log('[ImageToImage] 开始生成，参数:', {
@@ -581,39 +581,59 @@ export default function TextToImagePage() {
         aspectRatio: i2iAspectRatio
       });
 
-      const response = await fetch('/api/ai/image-to-image', {
+      // 提交图生图任务
+      const response = await fetch('/api/ai/evolink/image-to-image', {
         method: 'POST',
-        headers: {
-          'language': locale,  // 添加语言头
-        },
         body: formData,
       });
 
       const result = await response.json();
-      console.log('[ImageToImage] API 响应:', result);
+      console.log('[ImageToImage] 任务创建响应:', result);
 
-      // 检查登录失效
       if (result.code === 401 || response.status === 401) {
-        console.error('[ImageToImage] 登录失效:', result.message);
-
-        // 触发登录失效事件，打开登录弹窗
-        authEventBus.emit({
-          type: 'login-expired',
-          message: result.message || t('login_expired')
-        });
-
+        authEventBus.emit({ type: 'login-expired', message: result.message || t('login_expired') });
         toast.error(result.message || t('login_expired'));
         return;
       }
 
-      if (result.code === 1000 && result.data?.images && result.data.images.length > 0) {
-        const imageUrl = result.data.images[0];
-        setGeneratedI2IImage(imageUrl);
-        toast.success(t('generation_success'));
-      } else {
-        console.error('[ImageToImage] 生成失败:', result);
+      if (result.code !== 1000) {
         toast.error(result.message || t('generation_failed'));
+        return;
       }
+
+      const taskId = result.data.id;
+      console.log('[ImageToImage] 任务ID:', taskId);
+
+      // 轮询任务状态（复用文生图的 task 路由）
+      const maxAttempts = 120;
+      const pollInterval = 2000;
+
+      for (let attempt = 0; attempt < maxAttempts; attempt++) {
+        await new Promise(resolve => setTimeout(resolve, pollInterval));
+
+        const statusResponse = await fetch(`/api/ai/evolink/task/${taskId}`);
+        const statusResult = await statusResponse.json();
+        console.log(`[ImageToImage] 轮询 ${attempt + 1}/${maxAttempts}, 状态:`, statusResult.data?.status, '进度:', statusResult.data?.progress);
+
+        if (statusResult.code !== 1000) {
+          throw new Error(statusResult.message || 'Task query failed');
+        }
+
+        const taskData = statusResult.data;
+
+        if (taskData.status === 'completed' && taskData.results?.length > 0) {
+          console.log('[ImageToImage] 生成完成，图片URL:', taskData.results[0]);
+          setGeneratedI2IImage(taskData.results[0]);
+          toast.success(t('generation_success'));
+          return;
+        }
+
+        if (taskData.status === 'failed') {
+          throw new Error('Generation failed');
+        }
+      }
+
+      throw new Error('Task timeout');
     } catch (error) {
       console.error('[ImageToImage] 生成异常:', error);
       toast.error(t('generation_error'));
